@@ -5,7 +5,15 @@ import contextlib
 import functools
 import inspect
 from abc import ABC, abstractmethod
-from asyncio import CancelledError, Task, create_task, get_running_loop, sleep, timeout
+from asyncio import (
+    CancelledError,
+    Handle,
+    Task,
+    create_task,
+    get_running_loop,
+    sleep,
+    timeout,
+)
 from dataclasses import replace
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Generic, TypeVar, cast
@@ -280,7 +288,10 @@ class ConnectASGIApplication(ABC, Generic[_SVC]):
                 request = await self._read_post_request(
                     endpoint, receive, codec, headers
                 )
-            response_data = await endpoint.function(request, ctx)
+            async with _cancel_on_disconnect(receive) as watch_for_disconnect:
+                # The request has been read, so receive() is free to watch.
+                watch_for_disconnect()
+                response_data = await endpoint.function(request, ctx)
         except Exception as e:  # noqa: BLE001 # re-raised after ending the run
             error = e
         finally:
@@ -585,25 +596,35 @@ async def _cancel_on_disconnect(
     called, once the request body has been read.
     """
     scope = timeout(None)
+    loop = get_running_loop()
+    pending: Handle | None = None
     task: Task[None] | None = None
 
     async def watch() -> None:
         while True:
             msg = await receive()
             if msg["type"] == "http.disconnect":
-                scope.reschedule(get_running_loop().time())
+                scope.reschedule(loop.time())
                 return
 
-    def start() -> None:
+    def create() -> None:
         nonlocal task
-        if task is None:
-            task = create_task(watch())
+        task = create_task(watch())
+
+    def start() -> None:
+        nonlocal pending
+        # Creating the task on the next loop iteration skips it for blocks that
+        # finish without waiting, such as most unary handlers.
+        if pending is None:
+            pending = loop.call_soon(create)
 
     try:
         async with scope:
             try:
                 yield start
             finally:
+                if pending is not None:
+                    pending.cancel()
                 if task is not None:
                     task.cancel()
                     with contextlib.suppress(CancelledError):

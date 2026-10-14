@@ -689,6 +689,7 @@ async def test_server_stream_client_disconnect_while_blocked() -> None:
         ),
         pytest.param("MakeVariousHats", "application/connect+proto", id="bidi_stream"),
         pytest.param("MakeHat", "application/grpc+proto", id="grpc_unary"),
+        pytest.param("MakeHat", "application/proto", id="connect_unary"),
     ],
 )
 async def test_client_disconnect_after_request(method: str, content_type: str) -> None:
@@ -726,8 +727,9 @@ async def test_client_disconnect_after_request(method: str, content_type: str) -
 
     app = HaberdasherASGIApplication(BlockedHaberdasher())
 
-    request_bytes = Size(inches=10).to_binary()
-    request_body = struct.pack(">BI", 0, len(request_bytes)) + request_bytes
+    request_body = Size(inches=10).to_binary()
+    if content_type != "application/proto":
+        request_body = struct.pack(">BI", 0, len(request_body)) + request_body
     sent_request = False
     sent: list[dict] = []
 
@@ -750,6 +752,11 @@ async def test_client_disconnect_after_request(method: str, content_type: str) -
     if content_type == "application/grpc+proto":
         assert sent[-1]["type"] == "http.response.trailers"
         assert (b"grpc-status", b"1") in sent[-1]["headers"]
+    elif content_type == "application/proto":
+        assert json.loads(sent[-1]["body"]) == {
+            "code": "canceled",
+            "message": "Client disconnected",
+        }
     else:
         end = sent[-1]["body"]
         assert end[0] & 0b10, "last body is the end-of-stream message"
