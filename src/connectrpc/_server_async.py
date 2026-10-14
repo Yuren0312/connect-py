@@ -452,8 +452,8 @@ class ConnectASGIApplication(ABC, Generic[_SVC]):
                     response_stream = endpoint.function(request_stream, ctx)
 
             try:
-                # The watch ends before the generator is closed so a throwing
-                # generator finally-block doesn't leak its task.
+                # Exit the watch before aclose() below, so an error from the
+                # generator's cleanup can't leak the watch task.
                 async with watch:
                     async for message in response_stream:
                         # Don't send headers until the first message to allow logic a
@@ -583,12 +583,9 @@ class ConnectASGIApplication(ABC, Generic[_SVC]):
 
 @contextlib.asynccontextmanager
 async def _cancel_on_disconnect(receive: ASGIReceiveCallable) -> AsyncGenerator[None]:
-    """Cancel the enclosed block when receive() reports a client disconnect.
+    """Cancel the enclosed block with CANCELED when the client disconnects.
 
-    The cancellation interrupts whatever the block awaits, such as a handler
-    blocked before producing its next message, and leaves the block as a
-    CANCELED [ConnectError]. Only use this once the request body has been
-    fully read, since it consumes receive().
+    This reads receive(), so only use it once the request body has been read.
     """
     scope = timeout(None)
 

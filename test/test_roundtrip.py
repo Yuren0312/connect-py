@@ -607,8 +607,6 @@ async def test_server_stream_client_disconnect() -> None:
 
     scope = _make_similar_hats_scope()
 
-    # Without the fix the app hangs forever (generator never stopped), causing a
-    # TimeoutError here.  With the fix it terminates promptly after the disconnect.
     await asyncio.wait_for(app(scope, receive, send), timeout=5.0)
 
     assert generator_closed.is_set(), (
@@ -683,7 +681,6 @@ async def test_server_stream_client_disconnect_while_blocked() -> None:
 
 
 def _make_similar_hats_scope() -> HTTPScope:
-    """An ASGI scope for a Connect MakeSimilarHats call."""
     return {
         "type": "http",
         "asgi": {"spec_version": "2.0", "version": "3.0"},
