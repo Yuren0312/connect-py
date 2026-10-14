@@ -5,7 +5,7 @@ import contextlib
 import functools
 import inspect
 from abc import ABC, abstractmethod
-from asyncio import CancelledError, create_task, get_running_loop, sleep, timeout
+from asyncio import CancelledError, Task, create_task, get_running_loop, sleep, timeout
 from dataclasses import replace
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Generic, TypeVar, cast
@@ -415,46 +415,40 @@ class ConnectASGIApplication(ABC, Generic[_SVC]):
                     headers.get(protocol.compression_header_name(), ""),
                     self._compressions,
                 )
-            request_stream = _request_stream(
-                receive,
-                endpoint.method.input,
-                codec,
-                req_compression,
-                self._read_max_bytes,
-            )
-
-            watch: contextlib.AbstractAsyncContextManager[None] = (
-                contextlib.nullcontext()
-            )
-
-            match endpoint:
-                case EndpointUnary():
-                    request = await _consume_single_request(request_stream)
-                    response = await endpoint.function(request, ctx)
-                    # End the run before sending the response so on_end can still
-                    # modify response metadata.
-                    if (end_error := await metadata_run.end(None)) is not None:
-                        raise end_error
-                    response_stream = _yield_single_response(response)
-                case EndpointClientStream():
-                    response = await endpoint.function(request_stream, ctx)
-                    if (end_error := await metadata_run.end(None)) is not None:
-                        raise end_error
-                    response_stream = _yield_single_response(response)
-                case EndpointServerStream():
-                    request = await _consume_single_request(request_stream)
-                    response_stream = endpoint.function(request, ctx)
-
-                    # The request has been fully consumed; monitor receive() for a
-                    # client disconnect so we can stop streaming promptly.
-                    watch = _cancel_on_disconnect(receive)
-                case EndpointBidiStream():
-                    response_stream = endpoint.function(request_stream, ctx)
-
+            response_stream: AsyncIterator[_RES] | None = None
             try:
                 # Exit the watch before aclose() below, so an error from the
                 # generator's cleanup can't leak the watch task.
-                async with watch:
+                async with _cancel_on_disconnect(receive) as watch_for_disconnect:
+                    request_stream = _request_stream(
+                        receive,
+                        endpoint.method.input,
+                        codec,
+                        req_compression,
+                        watch_for_disconnect,
+                        self._read_max_bytes,
+                    )
+
+                    match endpoint:
+                        case EndpointUnary():
+                            request = await _consume_single_request(request_stream)
+                            response = await endpoint.function(request, ctx)
+                            # End the run before sending the response so on_end can
+                            # still modify response metadata.
+                            if (end_error := await metadata_run.end(None)) is not None:
+                                raise end_error
+                            response_stream = _yield_single_response(response)
+                        case EndpointClientStream():
+                            response = await endpoint.function(request_stream, ctx)
+                            if (end_error := await metadata_run.end(None)) is not None:
+                                raise end_error
+                            response_stream = _yield_single_response(response)
+                        case EndpointServerStream():
+                            request = await _consume_single_request(request_stream)
+                            response_stream = endpoint.function(request, ctx)
+                        case EndpointBidiStream():
+                            response_stream = endpoint.function(request_stream, ctx)
+
                     async for message in response_stream:
                         # Don't send headers until the first message to allow logic a
                         # chance to add response headers.
@@ -582,12 +576,16 @@ class ConnectASGIApplication(ABC, Generic[_SVC]):
 
 
 @contextlib.asynccontextmanager
-async def _cancel_on_disconnect(receive: ASGIReceiveCallable) -> AsyncGenerator[None]:
+async def _cancel_on_disconnect(
+    receive: ASGIReceiveCallable,
+) -> AsyncGenerator[Callable[[], None]]:
     """Cancel the enclosed block with CANCELED when the client disconnects.
 
-    This reads receive(), so only use it once the request body has been read.
+    Watching reads receive(), so it starts only when the yielded function is
+    called, once the request body has been read.
     """
     scope = timeout(None)
+    task: Task[None] | None = None
 
     async def watch() -> None:
         while True:
@@ -596,15 +594,20 @@ async def _cancel_on_disconnect(receive: ASGIReceiveCallable) -> AsyncGenerator[
                 scope.reschedule(get_running_loop().time())
                 return
 
+    def start() -> None:
+        nonlocal task
+        if task is None:
+            task = create_task(watch())
+
     try:
         async with scope:
-            task = create_task(watch())
             try:
-                yield
+                yield start
             finally:
-                task.cancel()
-                with contextlib.suppress(CancelledError):
-                    await task
+                if task is not None:
+                    task.cancel()
+                    with contextlib.suppress(CancelledError):
+                        await task
     except TimeoutError as e:
         if scope.expired():
             raise ConnectError(Code.CANCELED, "Client disconnected") from e
@@ -640,6 +643,7 @@ async def _request_stream(
     request_class: type[_REQ],
     codec: Codec,
     compression: Compression,
+    on_body_read: Callable[[], None],
     read_max_bytes: int | None = None,
 ) -> AsyncIterator[_REQ]:
     try:
@@ -652,6 +656,7 @@ async def _request_stream(
                     # Check for cancellation each message. While this seems heavyweight,
                     # conformance tests require it.
                     await sleep(0)
+            on_body_read()
     except CancelledError as e:
         raise ConnectError(Code.CANCELED, "Request was cancelled") from e
 

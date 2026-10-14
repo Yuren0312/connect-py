@@ -605,7 +605,7 @@ async def test_server_stream_client_disconnect() -> None:
             if response_count >= 3:
                 disconnect_trigger.set()
 
-    scope = _make_similar_hats_scope()
+    scope = _haberdasher_scope()
 
     await asyncio.wait_for(app(scope, receive, send), timeout=5.0)
 
@@ -667,7 +667,7 @@ async def test_server_stream_client_disconnect_while_blocked() -> None:
             sent.append(message["body"])
             first_message_sent.set()
 
-    scope = _make_similar_hats_scope()
+    scope = _haberdasher_scope()
 
     await asyncio.wait_for(app(scope, receive, send), timeout=1.0)
 
@@ -680,19 +680,100 @@ async def test_server_stream_client_disconnect_while_blocked() -> None:
     }
 
 
-def _make_similar_hats_scope() -> HTTPScope:
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "content_type"),
+    [
+        pytest.param(
+            "MakeFlexibleHat", "application/connect+proto", id="client_stream"
+        ),
+        pytest.param("MakeVariousHats", "application/connect+proto", id="bidi_stream"),
+        pytest.param("MakeHat", "application/grpc+proto", id="grpc_unary"),
+    ],
+)
+async def test_client_disconnect_after_request(method: str, content_type: str) -> None:
+    """A handler still running after the request ends is cancelled on disconnect."""
+    events: list[str] = []
+    blocked = asyncio.Event()
+
+    async def block() -> None:
+        blocked.set()
+        await asyncio.Event().wait()
+
+    class BlockedHaberdasher(Haberdasher):
+        async def make_hat(self, _request, _ctx):
+            try:
+                await block()
+            finally:
+                events.append("handler closed")
+
+        async def make_flexible_hat(self, request, _ctx):
+            try:
+                async for _ in request:
+                    pass
+                await block()
+            finally:
+                events.append("handler closed")
+
+        async def make_various_hats(self, request, _ctx):
+            try:
+                async for _ in request:
+                    pass
+                await block()
+                yield Hat()
+            finally:
+                events.append("handler closed")
+
+    app = HaberdasherASGIApplication(BlockedHaberdasher())
+
+    request_bytes = Size(inches=10).to_binary()
+    request_body = struct.pack(">BI", 0, len(request_bytes)) + request_bytes
+    sent_request = False
+    sent: list[dict] = []
+
+    async def receive() -> HTTPRequestEvent | HTTPDisconnectEvent:
+        nonlocal sent_request
+        if not sent_request:
+            sent_request = True
+            return {"type": "http.request", "body": request_body, "more_body": False}
+        await blocked.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+
+    await asyncio.wait_for(
+        app(_haberdasher_scope(method, content_type), receive, send), timeout=1.0
+    )
+
+    assert events == ["handler closed"]
+    if content_type == "application/grpc+proto":
+        assert sent[-1]["type"] == "http.response.trailers"
+        assert (b"grpc-status", b"1") in sent[-1]["headers"]
+    else:
+        end = sent[-1]["body"]
+        assert end[0] & 0b10, "last body is the end-of-stream message"
+        assert json.loads(end[5:]) == {
+            "error": {"code": "canceled", "message": "Client disconnected"}
+        }
+
+
+def _haberdasher_scope(
+    method: str = "MakeSimilarHats", content_type: str = "application/connect+proto"
+) -> HTTPScope:
+    path = f"/connectrpc.example.Haberdasher/{method}"
     return {
         "type": "http",
         "asgi": {"spec_version": "2.0", "version": "3.0"},
         "http_version": "1.1",
         "method": "POST",
         "scheme": "http",
-        "path": "/connectrpc.example.Haberdasher/MakeSimilarHats",
-        "raw_path": b"/connectrpc.example.Haberdasher/MakeSimilarHats",
+        "path": path,
+        "raw_path": path.encode(),
         "query_string": b"",
         "root_path": "",
-        "headers": [(b"content-type", b"application/connect+proto")],
+        "headers": [(b"content-type", content_type.encode())],
         "client": None,
         "server": None,
-        "extensions": None,
+        "extensions": {"http.response.trailers": {}},
     }
