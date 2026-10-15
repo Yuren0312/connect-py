@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import time
-from contextlib import AbstractContextManager, contextmanager
 from typing import TYPE_CHECKING, TypeAlias, TypeVar, cast
 
 from connectrpc.errors import ConnectError
+from opentelemetry.context import attach, detach
 from opentelemetry.metrics import MeterProvider, get_meter_provider
 from opentelemetry.propagate import get_global_textmap
 from opentelemetry.propagators.textmap import Setter, TextMapPropagator, default_setter
 from opentelemetry.trace import (
     Span,
     SpanKind,
+    Status,
+    StatusCode,
     TracerProvider,
     get_current_span,
     get_tracer_provider,
+    set_span_in_context,
 )
 from opentelemetry.util.types import AttributeValue
 
@@ -33,14 +36,18 @@ from ._semconv import (
 from ._version import __version__
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, MutableMapping
+    import contextvars
+    from collections.abc import MutableMapping
 
     from connectrpc.request import RequestContext
+    from opentelemetry.context import Context
 
 REQ = TypeVar("REQ")
 RES = TypeVar("RES")
 
-Token: TypeAlias = tuple[AbstractContextManager, Span, float, dict[str, AttributeValue]]
+Token: TypeAlias = tuple[
+    Span, "contextvars.Token[Context] | None", float, dict[str, AttributeValue]
+]
 
 # Workaround bad typing
 _DEFAULT_TEXTMAP_SETTER = cast("Setter[MutableMapping[str, str]]", default_setter)
@@ -117,9 +124,12 @@ class OpenTelemetryInterceptor:
             if port is not None:
                 shared_attrs[SERVER_PORT] = port
 
-        cm = self._start_span(ctx, rpc_method, shared_attrs)
-        span = cm.__enter__()
-        return cm, span, start_time, shared_attrs
+        span = self._start_span(ctx, rpc_method, shared_attrs)
+        # Only server spans become current. A client streaming call ends after
+        # the caller has handled its messages, possibly in another task, so the
+        # client span is carried only in the request headers.
+        context_token = None if self._client else attach(set_span_in_context(span))
+        return span, context_token, start_time, shared_attrs
 
     async def on_end(
         self, token: Token, ctx: RequestContext, error: Exception | None
@@ -129,7 +139,7 @@ class OpenTelemetryInterceptor:
     def on_end_sync(
         self, token: Token, _ctx: RequestContext, error: Exception | None
     ) -> None:
-        cm, span, start_time, shared_attrs = token
+        span, context_token, start_time, shared_attrs = token
         end_time = time.perf_counter()
         error_attrs = self._get_error_attributes(error)
         if error_attrs:
@@ -140,22 +150,23 @@ class OpenTelemetryInterceptor:
             metric_attrs.update(error_attrs)
         self._call_duration.record(end_time - start_time, metric_attrs)
         if error:
-            cm.__exit__(type(error), error, error.__traceback__)
-        else:
-            cm.__exit__(None, None, None)
+            span.record_exception(error)
+            span.set_status(
+                Status(StatusCode.ERROR, f"{type(error).__name__}: {error}")
+            )
+        span.end()
+        if context_token is not None:
+            detach(context_token)
 
-    @contextmanager
     def _start_span(
         self,
         ctx: RequestContext,
         span_name: str,
         shared_attrs: dict[str, AttributeValue],
-    ) -> Iterator[Span]:
-        parent_otel_ctx = None
+    ) -> Span:
+        parent_otel_ctx: Context | None = None
         if self._client:
             span_kind = SpanKind.CLIENT
-            carrier = ctx.request_headers
-            self._propagator.inject(carrier, setter=_DEFAULT_TEXTMAP_SETTER)
         else:
             span_kind = SpanKind.SERVER
             parent_span = get_current_span()
@@ -171,10 +182,16 @@ class OpenTelemetryInterceptor:
             if port is not None:
                 attrs[CLIENT_PORT] = port
 
-        with self._tracer.start_as_current_span(
+        span = self._tracer.start_span(
             span_name, kind=span_kind, attributes=attrs, context=parent_otel_ctx
-        ) as span:
-            yield span
+        )
+        if self._client:
+            self._propagator.inject(
+                ctx.request_headers,
+                context=set_span_in_context(span),
+                setter=_DEFAULT_TEXTMAP_SETTER,
+            )
+        return span
 
     def _get_error_attributes(
         self, error: Exception | None
