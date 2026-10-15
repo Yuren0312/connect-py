@@ -324,8 +324,10 @@ async def test_connect_error(
     assert client_trace_context.trace_id == server_trace_context.trace_id
     assert server_parent_context.span_id == client_trace_context.span_id
 
+    # FAILED_PRECONDITION is an error of the client, not the server.
+    assert spans[0].status.is_unset
+    assert spans[1].status.status_code == StatusCode.ERROR
     for span in spans:
-        assert span.status.status_code == StatusCode.ERROR
         attrs = span.attributes
         assert attrs is not None
         assert attrs["rpc.system.name"] == "connectrpc"

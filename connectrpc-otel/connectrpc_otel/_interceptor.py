@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, TypeAlias, TypeVar, cast
 
+from connectrpc.code import Code
 from connectrpc.errors import ConnectError
 from opentelemetry.context import attach, detach
 from opentelemetry.metrics import MeterProvider, get_meter_provider
@@ -48,6 +49,19 @@ RES = TypeVar("RES")
 Token: TypeAlias = tuple[
     Span, "contextvars.Token[Context] | None", float, dict[str, AttributeValue]
 ]
+
+# Codes that mark server spans as errors, from
+# https://github.com/open-telemetry/semantic-conventions/blob/v1.44.0/docs/rpc/connect-rpc.md#server
+_SERVER_ERROR_CODES = frozenset(
+    (
+        Code.UNKNOWN,
+        Code.DEADLINE_EXCEEDED,
+        Code.UNIMPLEMENTED,
+        Code.INTERNAL,
+        Code.UNAVAILABLE,
+        Code.DATA_LOSS,
+    )
+)
 
 # Workaround bad typing
 _DEFAULT_TEXTMAP_SETTER = cast("Setter[MutableMapping[str, str]]", default_setter)
@@ -151,9 +165,10 @@ class OpenTelemetryInterceptor:
         self._call_duration.record(end_time - start_time, metric_attrs)
         if error:
             span.record_exception(error)
-            span.set_status(
-                Status(StatusCode.ERROR, f"{type(error).__name__}: {error}")
-            )
+            if self._client or _error_code(error) in _SERVER_ERROR_CODES:
+                span.set_status(
+                    Status(StatusCode.ERROR, f"{type(error).__name__}: {error}")
+                )
         span.end()
         if context_token is not None:
             detach(context_token)
@@ -201,10 +216,17 @@ class OpenTelemetryInterceptor:
 
         return {
             ERROR_TYPE: type(error).__qualname__,
-            RPC_RESPONSE_STATUS_CODE: error.code.value
-            if isinstance(error, ConnectError)
-            else "unknown",
+            RPC_RESPONSE_STATUS_CODE: _error_code(error).value,
         }
+
+
+def _error_code(error: Exception) -> Code:
+    """Return the code of an RPC that ended with error.
+
+    An exception other than [ConnectError][connectrpc.errors.ConnectError] is
+    sent to clients as UNKNOWN, so it is recorded that way.
+    """
+    return error.code if isinstance(error, ConnectError) else Code.UNKNOWN
 
 
 def _split_address(address: str) -> tuple[str, int | None]:
