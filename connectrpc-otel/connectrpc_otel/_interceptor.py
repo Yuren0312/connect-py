@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, TypeAlias, TypeVar, cast
 
+from connectrpc.code import Code
 from connectrpc.errors import ConnectError
 from opentelemetry.context import attach, detach
 from opentelemetry.metrics import MeterProvider, get_meter_provider
@@ -141,13 +142,11 @@ class OpenTelemetryInterceptor:
     ) -> None:
         span, context_token, start_time, shared_attrs = token
         end_time = time.perf_counter()
-        error_attrs = self._get_error_attributes(error)
-        if error_attrs:
-            span.set_attributes(error_attrs)
+        status_attrs = _status_attributes(error)
+        span.set_attributes(status_attrs)
         # Won't use shared_attrs anymore, no need to copy.
         metric_attrs = shared_attrs
-        if error_attrs:
-            metric_attrs.update(error_attrs)
+        metric_attrs.update(status_attrs)
         self._call_duration.record(end_time - start_time, metric_attrs)
         if error:
             span.record_exception(error)
@@ -193,18 +192,18 @@ class OpenTelemetryInterceptor:
             )
         return span
 
-    def _get_error_attributes(
-        self, error: Exception | None
-    ) -> dict[str, AttributeValue] | None:
-        if not error:
-            return None
 
-        return {
-            ERROR_TYPE: type(error).__qualname__,
-            RPC_RESPONSE_STATUS_CODE: error.code.value
-            if isinstance(error, ConnectError)
-            else "unknown",
-        }
+def _status_attributes(error: Exception | None) -> dict[str, AttributeValue]:
+    """Return the status attributes of an RPC, which succeeded if error is None.
+
+    Codes use gRPC's canonical names, such as DEADLINE_EXCEEDED. An exception
+    other than [ConnectError][connectrpc.errors.ConnectError] is sent to clients
+    as UNKNOWN, so it is recorded that way.
+    """
+    if error is None:
+        return {RPC_RESPONSE_STATUS_CODE: "OK"}
+    code = error.code if isinstance(error, ConnectError) else Code.UNKNOWN
+    return {RPC_RESPONSE_STATUS_CODE: code.name, ERROR_TYPE: code.name}
 
 
 def _split_address(address: str) -> tuple[str, int | None]:

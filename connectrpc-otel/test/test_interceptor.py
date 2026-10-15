@@ -223,7 +223,7 @@ async def test_basic(
         assert attrs is not None
         assert attrs["rpc.system.name"] == "connectrpc"
         assert attrs["rpc.method"] == "connectrpc.eliza.v1.ElizaService/Say"
-        assert "rpc.response.status_code" not in attrs
+        assert attrs["rpc.response.status_code"] == "OK"
         assert "error.type" not in attrs
         assert attrs["server.address"] == "localhost"
         assert attrs["server.port"] == 80
@@ -250,6 +250,7 @@ async def test_basic(
         "rpc.method": "connectrpc.eliza.v1.ElizaService/Say",
         "server.address": "localhost",
         "server.port": 80,
+        "rpc.response.status_code": "OK",
     }
 
     server_metric = metrics[1]
@@ -268,6 +269,7 @@ async def test_basic(
         "rpc.method": "connectrpc.eliza.v1.ElizaService/Say",
         "server.address": "localhost",
         "server.port": 80,
+        "rpc.response.status_code": "OK",
     }
 
 
@@ -330,8 +332,8 @@ async def test_connect_error(
         assert attrs is not None
         assert attrs["rpc.system.name"] == "connectrpc"
         assert attrs["rpc.method"] == "connectrpc.eliza.v1.ElizaService/Say"
-        assert attrs["rpc.response.status_code"] == "failed_precondition"
-        assert attrs["error.type"] == "ConnectError"
+        assert attrs["rpc.response.status_code"] == "FAILED_PRECONDITION"
+        assert attrs["error.type"] == "FAILED_PRECONDITION"
         assert attrs["server.address"] == "localhost"
         assert attrs["server.port"] == 80
 
@@ -357,8 +359,8 @@ async def test_connect_error(
         "rpc.method": "connectrpc.eliza.v1.ElizaService/Say",
         "server.address": "localhost",
         "server.port": 80,
-        "error.type": "ConnectError",
-        "rpc.response.status_code": "failed_precondition",
+        "error.type": "FAILED_PRECONDITION",
+        "rpc.response.status_code": "FAILED_PRECONDITION",
     }
 
     server_metric = metrics[1]
@@ -377,8 +379,8 @@ async def test_connect_error(
         "rpc.method": "connectrpc.eliza.v1.ElizaService/Say",
         "server.address": "localhost",
         "server.port": 80,
-        "error.type": "ConnectError",
-        "rpc.response.status_code": "failed_precondition",
+        "error.type": "FAILED_PRECONDITION",
+        "rpc.response.status_code": "FAILED_PRECONDITION",
     }
 
 
@@ -413,21 +415,15 @@ async def test_unknown_error(
         assert attrs is not None
         assert attrs["rpc.system.name"] == "connectrpc"
         assert attrs["rpc.method"] == "connectrpc.eliza.v1.ElizaService/Say"
-        assert attrs["rpc.response.status_code"] == "unknown"
+        assert attrs["rpc.response.status_code"] == "UNKNOWN"
+        assert attrs["error.type"] == "UNKNOWN"
         assert attrs["server.address"] == "localhost"
         assert attrs["server.port"] == 80
 
     server_attrs = spans[0].attributes
     assert server_attrs is not None
-    # Server sees the ValueError itself
-    assert server_attrs["error.type"] == "ValueError"
     assert server_attrs["client.address"] == "123.456.7.89"
     assert server_attrs["client.port"] == 143
-
-    client_attrs = spans[1].attributes
-    assert client_attrs is not None
-    # Client just sees a ConnectError
-    assert client_attrs["error.type"] == "ConnectError"
 
     metrics = get_metric_data(metric_reader)
     client_metric = metrics[0]
@@ -446,8 +442,8 @@ async def test_unknown_error(
         "rpc.method": "connectrpc.eliza.v1.ElizaService/Say",
         "server.address": "localhost",
         "server.port": 80,
-        "error.type": "ConnectError",
-        "rpc.response.status_code": "unknown",
+        "error.type": "UNKNOWN",
+        "rpc.response.status_code": "UNKNOWN",
     }
 
     server_metric = metrics[1]
@@ -466,8 +462,8 @@ async def test_unknown_error(
         "rpc.method": "connectrpc.eliza.v1.ElizaService/Say",
         "server.address": "localhost",
         "server.port": 80,
-        "rpc.response.status_code": "unknown",
-        "error.type": "ValueError",
+        "rpc.response.status_code": "UNKNOWN",
+        "error.type": "UNKNOWN",
     }
 
 
@@ -531,7 +527,7 @@ async def test_http_server_parent(
         assert attrs is not None
         assert attrs["rpc.system.name"] == "connectrpc"
         assert attrs["rpc.method"] == "connectrpc.eliza.v1.ElizaService/Say"
-        assert "rpc.response.status_code" not in attrs
+        assert attrs["rpc.response.status_code"] == "OK"
         assert "error.type" not in attrs
         assert attrs["server.address"] == "localhost"
         assert attrs["server.port"] == 80
@@ -588,7 +584,7 @@ async def test_non_standard_port(
         assert attrs is not None
         assert attrs["rpc.system.name"] == "connectrpc"
         assert attrs["rpc.method"] == "connectrpc.eliza.v1.ElizaService/Say"
-        assert "rpc.response.status_code" not in attrs
+        assert attrs["rpc.response.status_code"] == "OK"
         assert "error.type" not in attrs
         assert attrs["server.address"] == "localhost"
         assert attrs["server.port"] == 9123
