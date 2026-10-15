@@ -14,14 +14,19 @@ from example.gen.connectrpc.eliza.v1.eliza_connect import (
     ElizaServiceSync,
     ElizaServiceWSGIApplication,
 )
-from example.gen.connectrpc.eliza.v1.eliza_pb import SayRequest, SayResponse
+from example.gen.connectrpc.eliza.v1.eliza_pb import (
+    IntroduceRequest,
+    IntroduceResponse,
+    SayRequest,
+    SayResponse,
+)
 from opentelemetry.instrumentation.asgi import (
     OpenTelemetryMiddleware as ASGIOpenTelemetryMiddleware,
 )
 from opentelemetry.instrumentation.wsgi import (
     OpenTelemetryMiddleware as WSGIOpenTelemetryMiddleware,
 )
-from opentelemetry.trace import SpanKind, StatusCode
+from opentelemetry.trace import SpanKind, StatusCode, get_current_span
 from pyqwest import Client, SyncClient
 from pyqwest.testing import ASGITransport, WSGITransport
 
@@ -29,6 +34,8 @@ from connectrpc_otel import OpenTelemetryInterceptor
 from connectrpc_otel._interceptor import _split_address
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Iterator
+
     from asgiref.typing import ASGIApplication
     from connectrpc.request import RequestContext
     from opentelemetry.sdk.metrics import MeterProvider
@@ -48,6 +55,12 @@ class ElizaServiceTest(ElizaService):
             raise ValueError(msg)
         return SayResponse(sentence="Hello")
 
+    async def introduce(
+        self, request: IntroduceRequest, _ctx: RequestContext
+    ) -> AsyncIterator[IntroduceResponse]:
+        for _ in range(2):
+            yield IntroduceResponse(sentence=f"Hello {request.name}")
+
 
 class ElizaServiceTestSync(ElizaServiceSync):
     def say(self, request: SayRequest, _ctx: RequestContext) -> SayResponse:
@@ -57,6 +70,12 @@ class ElizaServiceTestSync(ElizaServiceSync):
             msg = "unknown error"
             raise ValueError(msg)
         return SayResponse(sentence="Hello")
+
+    def introduce(
+        self, request: IntroduceRequest, _ctx: RequestContext
+    ) -> Iterator[IntroduceResponse]:
+        for _ in range(2):
+            yield IntroduceResponse(sentence=f"Hello {request.name}")
 
 
 @pytest.fixture
@@ -195,6 +214,8 @@ async def test_basic(
     assert client_trace_context is not None
     assert client_trace_context.trace_id == server_trace_context.trace_id
     assert server_parent_context.span_id == client_trace_context.span_id
+    # The server reads the client span from the request headers.
+    assert server_parent_context.is_remote
 
     for span in spans:
         assert span.status.is_unset
@@ -248,6 +269,34 @@ async def test_basic(
         "server.address": "localhost",
         "server.port": 80,
     }
+
+
+@pytest.mark.asyncio
+async def test_server_stream(
+    client: ElizaServiceClient | ElizaServiceClientSync,
+    span_exporter: InMemorySpanExporter,
+) -> None:
+    request = IntroduceRequest(name="Bob")
+    if isinstance(client, ElizaServiceClient):
+        current = [
+            get_current_span().get_span_context().is_valid
+            async for _ in client.introduce(request)
+        ]
+    else:
+        current = await asyncio.to_thread(
+            lambda: [
+                get_current_span().get_span_context().is_valid
+                for _ in client.introduce(request)
+            ]
+        )
+
+    # The client span is not current while the caller handles messages.
+    assert current == [False, False]
+    spans = span_exporter.get_finished_spans()
+    assert [span.kind for span in spans] == [SpanKind.SERVER, SpanKind.CLIENT]
+    server_parent_context = spans[0].parent
+    assert server_parent_context is not None
+    assert server_parent_context.span_id == spans[1].get_span_context().span_id
 
 
 @pytest.mark.asyncio
