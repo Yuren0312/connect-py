@@ -221,3 +221,43 @@ def test_entrypoint_auto_instruments() -> None:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# Runs in a subprocess so connectrpc isn't imported until instrumentation has
+# been cycled.
+def test_instrument_cycle_before_import() -> None:
+    script = textwrap.dedent("""
+        import sys
+
+        from connectrpc_otel import ConnectInstrumentor
+
+
+        def wrap_depth(function: object) -> int:
+            depth = 0
+            while hasattr(function, "__wrapped__"):
+                depth += 1
+                function = function.__wrapped__
+            return depth
+
+
+        instrumentor = ConnectInstrumentor()
+        instrumentor.instrument()
+        instrumentor.uninstrument()
+        instrumentor.instrument()
+        assert "connectrpc.client" not in sys.modules
+
+        from connectrpc.client import ConnectClient
+
+        assert wrap_depth(ConnectClient.__init__) == 1
+        instrumentor.uninstrument()
+        assert wrap_depth(ConnectClient.__init__) == 0
+
+        from connectrpc.server import ConnectASGIApplication
+
+        assert wrap_depth(ConnectASGIApplication.__init__) == 0
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", script], check=False, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr

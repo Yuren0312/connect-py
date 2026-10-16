@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 from functools import partial
 from typing import TYPE_CHECKING, ParamSpec, TypeVar, cast
 
@@ -35,6 +34,9 @@ class ConnectInstrumentor(BaseInstrumentor):
     keyword arguments, which are passed to each interceptor.
     """
 
+    # The classes whose __init__ is wrapped, or None when not instrumented.
+    _wrapped: list[type] | None = None
+
     def instrumentation_dependencies(self) -> Collection[str]:
         return _instruments
 
@@ -46,40 +48,32 @@ class ConnectInstrumentor(BaseInstrumentor):
             "TracerProvider | None", kwargs.get("tracer_provider")
         )
 
+        self._wrapped = []
         register_post_import_hook(self._patch_client, "connectrpc.client")
         register_post_import_hook(self._patch_server, "connectrpc.server")
 
     def _uninstrument(self, **_kwargs: object) -> None:
-        # TODO: Remove sys.modules check after
-        # https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4321
-        if "connectrpc.client" in sys.modules:
-            unwrap("connectrpc.client.ConnectClient", "__init__")
-            unwrap("connectrpc.client.ConnectClientSync", "__init__")
-        if "connectrpc.server" in sys.modules:
-            unwrap("connectrpc.server.ConnectASGIApplication", "__init__")
-            unwrap("connectrpc.server.ConnectWSGIApplication", "__init__")
+        for cls in self._wrapped or ():
+            unwrap(cls, "__init__")
+        self._wrapped = None
 
     def _patch_client(self, module: ModuleType) -> None:
-        wrap_function_wrapper(
-            module, "ConnectClient.__init__", partial(self._init_wrapper, client=True)
-        )
-        wrap_function_wrapper(
-            module,
-            "ConnectClientSync.__init__",
-            partial(self._init_wrapper, client=True),
-        )
+        self._wrap(module.ConnectClient, client=True)
+        self._wrap(module.ConnectClientSync, client=True)
 
     def _patch_server(self, module: ModuleType) -> None:
+        self._wrap(module.ConnectASGIApplication, client=False)
+        self._wrap(module.ConnectWSGIApplication, client=False)
+
+    def _wrap(self, cls: type, *, client: bool) -> None:
+        # Post-import hooks can't be unregistered, so the hooks of every earlier
+        # instrument() call run when connectrpc is imported.
+        if self._wrapped is None or cls in self._wrapped:
+            return
         wrap_function_wrapper(
-            module,
-            "ConnectASGIApplication.__init__",
-            partial(self._init_wrapper, client=False),
+            cls, "__init__", partial(self._init_wrapper, client=client)
         )
-        wrap_function_wrapper(
-            module,
-            "ConnectWSGIApplication.__init__",
-            partial(self._init_wrapper, client=False),
-        )
+        self._wrapped.append(cls)
 
     def _init_wrapper(
         self,
