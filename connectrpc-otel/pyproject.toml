@@ -42,6 +42,7 @@ dependencies = [
   # the latest. This does introduce a possibility of incompatibilities, but there is no
   # alternative, and in practice, the APIs we use have been stable for a long time.
   "opentelemetry-instrumentation>=0.60b1",
+  "wrapt>=1.14.1",
 ]
 
 [project.urls]
