@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Generic, TypeVar
 
+from .method import StreamType, _with_stream_type
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 
@@ -34,28 +36,38 @@ class Endpoint(Generic[REQ, RES]):
         method: MethodInfo[T, U],
         function: Callable[[T, RequestContext[T, U]], Awaitable[U]],
     ) -> EndpointUnary[T, U]:
-        return EndpointUnary(method=method, function=function)
+        return EndpointUnary(
+            method=_with_stream_type(method, StreamType.UNARY), function=function
+        )
 
     @staticmethod
     def client_stream(
         method: MethodInfo[T, U],
         function: Callable[[AsyncIterator[T], RequestContext[T, U]], Awaitable[U]],
     ) -> EndpointClientStream[T, U]:
-        return EndpointClientStream(method=method, function=function)
+        return EndpointClientStream(
+            method=_with_stream_type(method, StreamType.CLIENT_STREAM),
+            function=function,
+        )
 
     @staticmethod
     def server_stream(
         method: MethodInfo[T, U],
         function: Callable[[T, RequestContext[T, U]], AsyncIterator[U]],
     ) -> EndpointServerStream[T, U]:
-        return EndpointServerStream(method=method, function=function)
+        return EndpointServerStream(
+            method=_with_stream_type(method, StreamType.SERVER_STREAM),
+            function=function,
+        )
 
     @staticmethod
     def bidi_stream(
         method: MethodInfo[T, U],
         function: Callable[[AsyncIterator[T], RequestContext[T, U]], AsyncIterator[U]],
     ) -> EndpointBidiStream[T, U]:
-        return EndpointBidiStream(method=method, function=function)
+        return EndpointBidiStream(
+            method=_with_stream_type(method, StreamType.BIDI_STREAM), function=function
+        )
 
 
 @dataclass(kw_only=True, frozen=True, slots=True)
@@ -95,7 +107,9 @@ class EndpointSync(Generic[REQ, RES]):
     def unary(
         *, method: MethodInfo[T, U], function: Callable[[T, RequestContext[T, U]], U]
     ) -> EndpointUnarySync[T, U]:
-        return EndpointUnarySync(method=method, function=function)
+        return EndpointUnarySync(
+            method=_with_stream_type(method, StreamType.UNARY), function=function
+        )
 
     @staticmethod
     def client_stream(
@@ -103,7 +117,10 @@ class EndpointSync(Generic[REQ, RES]):
         method: MethodInfo[T, U],
         function: Callable[[Iterator[T], RequestContext[T, U]], U],
     ) -> EndpointClientStreamSync[T, U]:
-        return EndpointClientStreamSync(method=method, function=function)
+        return EndpointClientStreamSync(
+            method=_with_stream_type(method, StreamType.CLIENT_STREAM),
+            function=function,
+        )
 
     @staticmethod
     def server_stream(
@@ -111,14 +128,19 @@ class EndpointSync(Generic[REQ, RES]):
         method: MethodInfo[T, U],
         function: Callable[[T, RequestContext[T, U]], Iterator[U]],
     ) -> EndpointServerStreamSync[T, U]:
-        return EndpointServerStreamSync(method=method, function=function)
+        return EndpointServerStreamSync(
+            method=_with_stream_type(method, StreamType.SERVER_STREAM),
+            function=function,
+        )
 
     @staticmethod
     def bidi_stream(
         method: MethodInfo[T, U],
         function: Callable[[Iterator[T], RequestContext[T, U]], Iterator[U]],
     ) -> EndpointBidiStreamSync[T, U]:
-        return EndpointBidiStreamSync(method=method, function=function)
+        return EndpointBidiStreamSync(
+            method=_with_stream_type(method, StreamType.BIDI_STREAM), function=function
+        )
 
 
 @dataclass(kw_only=True, frozen=True, slots=True)

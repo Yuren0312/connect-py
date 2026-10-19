@@ -25,6 +25,7 @@ from ._response_metadata import handle_response_headers
 from ._shared import decode_message
 from .code import Code
 from .errors import ConnectError
+from .method import StreamType, _with_stream_type
 from .protocol import ProtocolType
 
 if TYPE_CHECKING:
@@ -210,7 +211,7 @@ class ConnectClientSync:
         use_get: bool = False,
     ) -> RES:
         ctx = self._protocol.create_request_context(
-            method=method,
+            method=_with_stream_type(method, StreamType.UNARY),
             url=self._address,
             http_method="GET" if use_get else "POST",
             user_headers=headers,
@@ -233,7 +234,7 @@ class ConnectClientSync:
         timeout_ms: int | None = None,
     ) -> RES:
         ctx = self._protocol.create_request_context(
-            method=method,
+            method=_with_stream_type(method, StreamType.CLIENT_STREAM),
             url=self._address,
             http_method="POST",
             user_headers=headers,
@@ -254,7 +255,7 @@ class ConnectClientSync:
         timeout_ms: int | None = None,
     ) -> Iterator[RES]:
         ctx = self._protocol.create_request_context(
-            method=method,
+            method=_with_stream_type(method, StreamType.SERVER_STREAM),
             url=self._address,
             http_method="POST",
             user_headers=headers,
@@ -277,7 +278,7 @@ class ConnectClientSync:
         timeout_ms: int | None = None,
     ) -> Iterator[RES]:
         ctx = self._protocol.create_request_context(
-            method=method,
+            method=_with_stream_type(method, StreamType.BIDI_STREAM),
             url=self._address,
             http_method="POST",
             user_headers=headers,
